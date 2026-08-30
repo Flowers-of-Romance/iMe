@@ -39,6 +39,7 @@ SHOW_ON_FOCUS = True       # True: テキスト入力欄にフォーカス時に
 - `ImmGetDefaultIMEWnd` + `SendMessage` でIME状態をポーリング（50ms間隔）
 - `GetGUIThreadInfo` でキャレット位置を取得（取れないアプリではマウス位置にフォールバック）
 - tkinterで半透明オーバーレイ表示
+- 起動時に `SetProcessDpiAwarenessContext` でDPI対応を宣言する。宣言しないと `GetGUIThreadInfo` が返す `rcCaret`（対象アプリの物理ピクセル）と `ClientToScreen` が仮想化するクライアント原点が混ざり、画面を拡大表示している環境ではキャレットが右下に行くほどポップアップが離れ、最後は画面外に出る
 
 ## キャレット位置について
 

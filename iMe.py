@@ -21,6 +21,38 @@ user32.SendMessageW.restype = ctypes.c_long
 user32.GetGUIThreadInfo.restype = w.BOOL
 user32.GetCursorPos.restype = w.BOOL
 imm32.ImmGetDefaultIMEWnd.restype = w.HWND
+user32.MonitorFromPoint.restype = ctypes.c_void_p
+user32.MonitorFromPoint.argtypes = [w.POINT, w.DWORD]
+
+MONITOR_DEFAULTTONEAREST = 0x2
+MDT_EFFECTIVE_DPI = 0
+
+
+def set_dpi_awareness():
+    """tkinterのウィンドウ生成前にDPI対応を宣言する。
+
+    宣言しないと、GetGUIThreadInfoが返すrcCaret(対象アプリの物理ピクセルのまま)と
+    ClientToScreenが仮想化するクライアント原点が混ざった座標になり、
+    キャレットが右下に行くほどポップアップが離れていく。
+    """
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except AttributeError:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        return
+    except (AttributeError, OSError):
+        pass
+    try:
+        user32.SetProcessDPIAware()
+    except AttributeError:
+        pass
+
+
+set_dpi_awareness()
 
 WM_IME_CONTROL = 0x0283
 IMC_GETOPENSTATUS = 0x0005
@@ -32,6 +64,8 @@ HIDE_DELAY_MS = 800       # 切替時のみ表示の場合、消えるまでの�
 POS_FOLLOW_MS = 100       # 常時表示の場合、位置追従の間隔(ms)
 POLL_INTERVAL = 0.05      # IME状態チェック間隔(秒)
 FONT_SIZE = 14
+PAD_X = 12                # 箱の左右余白(96dpi基準のpx)
+PAD_Y = 4                 # 箱の上下余白(96dpi基準のpx)
 OFFSET_X = 4              # キャレットからのX方向オフセット
 OFFSET_Y = 8              # キャレットからのY方向オフセット
 COLOR_JA = '#2563EB'      # 日本語モードの色(青)
@@ -91,6 +125,20 @@ def get_caret_pos():
     return pt.x, pt.y, False
 
 
+def get_dpi_at(x, y):
+    """点(x, y)を含むモニタの実効DPIを返す。取得できなければ96。"""
+    try:
+        mon = user32.MonitorFromPoint(w.POINT(x, y), MONITOR_DEFAULTTONEAREST)
+        dx = ctypes.c_uint()
+        dy = ctypes.c_uint()
+        if ctypes.windll.shcore.GetDpiForMonitor(
+                mon, MDT_EFFECTIVE_DPI, ctypes.byref(dx), ctypes.byref(dy)) == 0:
+            return dx.value
+    except (AttributeError, OSError):
+        pass
+    return 96
+
+
 class iMe:
     def __init__(self):
         self.root = tk.Tk()
@@ -105,10 +153,15 @@ class iMe:
             font=('Segoe UI', FONT_SIZE, 'bold'),
             fg='white',
             bg='#222222',
-            padx=12,
-            pady=4,
+            padx=PAD_X,
+            pady=PAD_Y,
         )
         self.label.pack()
+
+        # Tkがウィンドウ生成時に採用したDPI。フォントはpt指定なのでこの分までは
+        # Tkが自動で拡大する。別DPIのモニタに出すときの差分だけを_apply_scaleで補う。
+        self.base_dpi = self.root.winfo_fpixels('1i')
+        self.cur_dpi = None
 
         self.prev_status = None
         self.prev_hwnd = None
@@ -139,11 +192,31 @@ class iMe:
         print(f'[iMe] 起動OK - 現在: {status}')
         print(f'[iMe] IMEを切り替えると表示されます。Ctrl+Cで終了。')
 
+    def _apply_scale(self, dpi):
+        """表示先モニタのDPIに合わせてフォントとpx指定の余白を拡大する"""
+        if dpi == self.cur_dpi:
+            return
+        self.cur_dpi = dpi
+        font_scale = dpi / self.base_dpi
+        px_scale = dpi / 96.0
+        self.label.config(
+            font=('Segoe UI', max(1, round(FONT_SIZE * font_scale)), 'bold'),
+            padx=max(1, round(PAD_X * px_scale)),
+            pady=max(1, round(PAD_Y * px_scale)),
+        )
+
+    def _place(self, x, y, dpi):
+        px_scale = dpi / 96.0
+        self.root.geometry(
+            f'+{x + round(OFFSET_X * px_scale)}+{y + round(OFFSET_Y * px_scale)}')
+
     def show(self, text, color):
         x, y, has_caret = get_caret_pos()
+        dpi = get_dpi_at(x, y)
+        self._apply_scale(dpi)
         self.label.config(text=text, bg=color)
         self.root.configure(bg=color)
-        self.root.geometry(f'+{x + OFFSET_X}+{y + OFFSET_Y}')
+        self._place(x, y, dpi)
         self.root.attributes('-alpha', OPACITY)
         self._current_text = text
         self._current_color = color
@@ -171,7 +244,9 @@ class iMe:
             return
         x, y, has_caret = get_caret_pos()
         if has_caret:
-            self.root.geometry(f'+{x + OFFSET_X}+{y + OFFSET_Y}')
+            dpi = get_dpi_at(x, y)
+            self._apply_scale(dpi)
+            self._place(x, y, dpi)
             self.root.after(POS_FOLLOW_MS, self._follow_caret)
         else:
             # キャレット取れなくなった→消す
